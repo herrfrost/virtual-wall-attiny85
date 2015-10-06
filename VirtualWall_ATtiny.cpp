@@ -1,0 +1,136 @@
+/*
+* VirtualWall_ATtiny.cpp
+*
+* Created: 2015-09-12 23:04:31
+*  Author: herrfrost
+*/
+
+#ifndef F_CPU
+#define F_CPU 1000000L
+#endif
+
+#define TURN_BACK 0b10100010 // 162
+#define TOGGLE_LED_ON_BURST 10
+
+#include <avr/io.h>
+#include <avr/interrupt.h>
+#include <limits.h>
+#include <util/delay.h>
+#include <avr/sleep.h>
+
+volatile bool wdi = true;
+
+void PWMPinOutOn()
+{
+	DDRB |= (1 << PB1);
+}
+
+void PWMPinOutOff()
+{
+	DDRB &= ~(1 << PB1);
+}
+
+void SendOne()
+{
+	PWMPinOutOn();
+	_delay_ms(3);
+	PWMPinOutOff();
+	_delay_ms(1);
+}
+
+void SendZero()
+{
+	PWMPinOutOn();
+	_delay_ms(1);
+	PWMPinOutOff();
+	_delay_ms(3);
+}
+
+
+void sendByteAndLightLED(uint8_t code)
+{
+	DDRB |= (1 << PB4);
+	PORTB |= (1 << PB4);
+	
+	for (int8_t i = CHAR_BIT - 1; i >= 0; i--)
+	{
+		if((code >> i) & 1)
+		{
+			SendOne();
+		}
+		else
+		{
+			SendZero();
+		}
+	}
+	
+	DDRB &= ~(1 << PB4);
+}
+
+void sleep()
+{
+	set_sleep_mode(SLEEP_MODE_PWR_DOWN);
+	sleep_enable();
+	sleep_mode();
+	sleep_disable();
+}
+
+int main(void)
+{
+	#ifndef NDEBUG
+	if(MCUSR & (1<<WDRF))   // WDT caused reset 
+		{
+		MCUSR &= ~(1 << WDRF);
+		WDTCR |= (1 << WDCE) | (1 << WDE); // change enable
+		WDTCR = 0x00; // disable WDT
+		
+		DDRB |= (1 << PB4);
+		while(1)
+		{
+			// blink led
+			PORTB |= (1 << PB4);
+			_delay_ms(100);
+			PORTB &= ~(1 << PB4);
+			_delay_ms(100);
+		}
+	}
+	#endif
+	
+	cli();
+
+	ACSR |= (1 << ACD);		// 16.2.2 disable analog comparator
+	ADCSRA &= ~(1 << ADEN); // 17.13.2 disable ADC
+
+	DDRB |= (1 << PB1); // PB1 (IR LED) & PB2 (LED) outputs
+	
+	// PWM
+	// OC0x toggle on each Compare Match (COM0x[1:0]=1
+	// FAST PWM mode 7: WGM0[2:0] = 7 for fixed modulation frequency (38 kHz)
+	TCCR0A |= (1 << COM0B1) | (1 << WGM01) | (1 << WGM00);
+	TCCR0B |= (1 << CS00) | (1 << WGM02);
+	OCR0A = 26; // Count to F_CPU * 1/38kHz
+	OCR0B = 13; // 50% duty cycle
+
+	// WDT
+	MCUSR &= ~(1 << WDRF);	// clear watchdog reset flag
+	WDTCR |= (1 << WDE) | (1 << WDCE);// change enable
+	WDTCR &= ~(1 << WDE); 
+	WDTCR |= (1 << WDIE) | (1 << WDP1) | (1 << WDP0); // 2^14 cycles @ 128 kHz ~ .128 s
+	
+	sei();
+	
+	while(1)
+	{
+		if(wdi)
+		{
+			wdi = false;
+			sendByteAndLightLED(TURN_BACK);
+			sleep();
+		}
+	}
+}
+
+ISR(WDT_vect)
+{
+	wdi = true;
+}
